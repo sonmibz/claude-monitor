@@ -483,8 +483,9 @@ function renderSessions(): void {
     cpuHistory.get(s.pid)!.push(cpu);
     memHistory.get(s.pid)!.push(mem);
 
-    // Context info
-    const ctx = contextMap.get(s.sessionId);
+    // Context info: try sessionId first, then fall back to PID matching
+    // (on --resume, the conversation session_id differs from sessionId)
+    const ctx = contextMap.get(s.sessionId) || contextMap.get(`pid:${s.pid}`);
     const ctxPct = ctx?.usedPercentage ?? 0;
     const ctxStr = `${ctxPct}%`;
 

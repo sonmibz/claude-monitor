@@ -28,10 +28,14 @@ echo "$input" | jq -c '{
 }' > "$OUTFILE" 2>/dev/null
 
 # Write per-session context data
+# Note: $PPID is the Claude Code process PID. On --resume, session_id (conversation ID)
+# differs from the sessionId in ~/.claude/sessions/{PID}.json, so we store the PID
+# to allow the TUI to match context data by PID as a fallback.
 SESSION_ID=$(echo "$input" | jq -r '.session_id // empty')
 if [ -n "$SESSION_ID" ]; then
-  echo "$input" | jq -c '{
+  echo "$input" | jq -c --arg pid "$PPID" '{
     session_id: .session_id,
+    pid: ($pid | tonumber),
     timestamp: (now | todate),
     model: .model.display_name,
     context_window: {
