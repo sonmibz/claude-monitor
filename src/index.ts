@@ -11,7 +11,7 @@ import {
   type SessionInfo,
 } from "./data/sessions.js";
 import { getProcessStats, type ProcessStats } from "./data/process.js";
-import { loadUsage, type UsageData } from "./data/usage.js";
+import { loadUsage, type UsageData, type ProjectUsage } from "./data/usage.js";
 import { loadRecentHistory, type HistoryEntry } from "./data/history.js";
 import { HistoryBuffer } from "./data/history-buffer.js";
 import { loadSessionContexts, type SessionContext } from "./data/context.js";
@@ -49,6 +49,7 @@ let usage: UsageData = {
   dailyModelTokens: [],
   firstSessionDate: null,
   lastComputedDate: null,
+  projectUsage: [],
 };
 
 // Per-session history buffers
@@ -66,11 +67,33 @@ const LOAD_TOTAL = 5;
 const LOGO_H = LOGO_HEIGHT + 2;
 const RATELIMIT_H = 7; // border + model + 5h + 7d + tokens + border
 let ROW2_H = 6; // dynamic, min height (sessions)
-const MESSAGES_H = 18; // Messages
-const HOURLY_H = 10; // Hourly Activity
-const AGENTS_H = MESSAGES_H + HOURLY_H; // agents (left) = Messages + Hourly
-const HISTORY_H = 12; // Recent Prompts (full width)
 const STATUSBAR_H = 3;
+
+// Dynamic heights — recalculated on resize
+let MIDDLE_H = 28;  // Agents / Messages+Hourly row
+let MESSAGES_H = 18;
+let HOURLY_H = 10;
+let AGENTS_H = 28;
+let PROJECTS_H = 14;
+let HISTORY_H = 12;
+
+function recalcLayout(): void {
+  const screenH = screen.height as number;
+  // Fixed overhead: Logo + RateLimit + Sessions + StatusBar
+  const fixedH = LOGO_H + RATELIMIT_H + ROW2_H + STATUSBAR_H;
+  // Remaining space for: Middle(Agents/Stats/Hourly) + Projects + History
+  const remaining = Math.max(15, screenH - fixedH);
+
+  // Distribute proportionally: middle 55%, projects 25%, history 20%
+  MIDDLE_H = Math.max(10, Math.floor(remaining * 0.55));
+  PROJECTS_H = Math.max(5, Math.floor(remaining * 0.25));
+  HISTORY_H = Math.max(4, remaining - MIDDLE_H - PROJECTS_H);
+
+  // Split middle row: Messages takes 65%, Hourly gets the rest
+  MESSAGES_H = Math.max(6, Math.floor(MIDDLE_H * 0.65));
+  HOURLY_H = Math.max(4, MIDDLE_H - MESSAGES_H);
+  AGENTS_H = MIDDLE_H; // left column matches full middle height
+}
 
 // ── Screen ─────────────────────────────────────────────────────────────
 const screen = blessed.screen({
@@ -78,6 +101,9 @@ const screen = blessed.screen({
   title: "Claude Monitor",
   fullUnicode: true,
 });
+
+// Calculate initial layout based on actual terminal size
+recalcLayout();
 
 // ── Logo ───────────────────────────────────────────────────────────────
 const logoBox = blessed.box({
@@ -166,8 +192,22 @@ const hourlyPanel = blessed.box({
   tags: false,
 });
 
-const historyPanel = blessed.box({
+const projectPanel = blessed.box({
   top: LOGO_H + RATELIMIT_H + ROW2_H + AGENTS_H,
+  left: 0,
+  width: "100%",
+  height: PROJECTS_H,
+  label: " Projects ",
+  border: { type: "line" },
+  style: { border: { fg: "green" }, label: { fg: "green" } },
+  scrollable: true,
+  keys: true,
+  vi: true,
+  tags: false,
+});
+
+const historyPanel = blessed.box({
+  top: LOGO_H + RATELIMIT_H + ROW2_H + AGENTS_H + PROJECTS_H,
   left: 0,
   width: "100%",
   height: HISTORY_H,
@@ -197,21 +237,33 @@ screen.append(sessionPanel);
 screen.append(agentPanel);
 screen.append(statsPanel);
 screen.append(hourlyPanel);
+screen.append(projectPanel);
 screen.append(historyPanel);
 screen.append(statusBar);
 
 // ── Dynamic layout ─────────────────────────────────────────────────────
 function repositionPanels(): void {
+  recalcLayout();
+
   const sessionTop = LOGO_H + RATELIMIT_H;
   sessionPanel.top = sessionTop;
   sessionPanel.height = ROW2_H;
 
-  const bottomTop = sessionTop + ROW2_H;
-  agentPanel.top = bottomTop;
+  const middleTop = sessionTop + ROW2_H;
+  agentPanel.top = middleTop;
+  agentPanel.height = AGENTS_H;
 
-  statsPanel.top = bottomTop;
-  hourlyPanel.top = bottomTop + MESSAGES_H;
-  historyPanel.top = bottomTop + AGENTS_H;
+  statsPanel.top = middleTop;
+  statsPanel.height = MESSAGES_H;
+  hourlyPanel.top = middleTop + MESSAGES_H;
+  hourlyPanel.height = HOURLY_H;
+
+  const projectTop = middleTop + AGENTS_H;
+  projectPanel.top = projectTop;
+  projectPanel.height = PROJECTS_H;
+
+  historyPanel.top = projectTop + PROJECTS_H;
+  historyPanel.height = HISTORY_H;
 }
 
 // ── Logo centering ─────────────────────────────────────────────────────
@@ -237,6 +289,7 @@ function centerLogo(): void {
 }
 
 screen.on("resize", () => {
+  repositionPanels();
   centerLogo();
   screen.render();
 });
@@ -669,6 +722,63 @@ function renderHourly(): void {
   hourlyPanel.setContent(lines.join("\n"));
 }
 
+function renderProjects(): void {
+  const lines: string[] = [];
+  const projects = usage.projectUsage;
+
+  if (projects.length === 0) {
+    lines.push("  (no project data)");
+    projectPanel.setContent(lines.join("\n"));
+    return;
+  }
+
+  // Column widths — Project and Bar expand to fill terminal width
+  const cSess = 8;
+  const cMsgs = 8;
+  const cTools = 8;
+  const cPct = 10;  // "Tokens%"
+  const cTokens = 20; // "in / out"
+  const cProject = 28;
+  const fixedCols = 2 + cProject + cSess + cMsgs + cTools + cPct + cTokens; // 2 = left indent
+  const cBar = Math.max(12, (screen.width as number) - fixedCols - 2); // -2 for border, bar fills the rest
+
+  // Header
+  lines.push(
+    `  ${"Project".padEnd(cProject)}${"Sess".padEnd(cSess)}${"Msgs".padEnd(cMsgs)}${"Tools".padEnd(cTools)}${"Tokens%".padEnd(cPct)}${"".padEnd(cBar)}${"Tokens (in/out)".padEnd(cTokens)}`
+  );
+
+  // Total tokens for percentage calculation
+  const totalTokens = projects.reduce(
+    (s, p) => s + p.inputTokens + p.outputTokens,
+    0
+  );
+
+  const barW = cBar - 2; // leave space for padding
+  for (const p of projects) {
+    const tokens = p.inputTokens + p.outputTokens;
+    const pct = totalTokens > 0 ? (tokens / totalTokens) * 100 : 0;
+
+    const name = p.project.length > cProject - 2
+      ? p.project.slice(0, cProject - 4) + ".."
+      : p.project;
+    const sess = formatNumber(p.sessionCount).padEnd(cSess);
+    const msgs = formatNumber(p.messageCount).padEnd(cMsgs);
+    const tools = formatNumber(p.toolCallCount).padEnd(cTools);
+    const pctStr = (pct.toFixed(1) + "%").padEnd(cPct);
+
+    // Bar fills remaining space
+    const filled = Math.round((pct / 100) * barW);
+    const bar = ("█".repeat(filled) + "░".repeat(barW - filled)).padEnd(cBar);
+
+    const tokenStr = `${formatTokens(p.inputTokens)} / ${formatTokens(p.outputTokens)}`;
+
+    lines.push(`  ${name.padEnd(cProject)}${sess}${msgs}${tools}${pctStr}${bar}${tokenStr}`);
+  }
+
+  projectPanel.setLabel(` Projects (${projects.length}) `);
+  projectPanel.setContent(lines.join("\n"));
+}
+
 function renderHistory(): void {
   const lines: string[] = [];
 
@@ -712,6 +822,7 @@ function renderStatusBar(): void {
 }
 
 function renderAll(): void {
+  repositionPanels();
   centerLogo();
   renderAgents();
   renderRateLimits();
@@ -719,6 +830,7 @@ function renderAll(): void {
   renderStats();
 
   renderHourly();
+  renderProjects();
   renderHistory();
   renderStatusBar();
 }
@@ -824,8 +936,8 @@ setInterval(async () => {
 setInterval(async () => {
   usage = await loadUsage();
   renderStats();
-
   renderHourly();
+  renderProjects();
   screen.render();
 }, 30000);
 

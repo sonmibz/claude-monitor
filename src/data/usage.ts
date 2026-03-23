@@ -58,6 +58,17 @@ export interface DailyModelTokens {
   tokensByModel: Record<string, number>;
 }
 
+export interface ProjectUsage {
+  project: string;         // short display name (e.g. "DagymCRM")
+  sessionCount: number;
+  messageCount: number;
+  toolCallCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+}
+
 export interface UsageData {
   todayActivity: DailyActivity | null;
   recentDays: DailyActivity[];
@@ -76,6 +87,7 @@ export interface UsageData {
   dailyModelTokens: DailyModelTokens[];
   firstSessionDate: string | null;
   lastComputedDate: string | null;
+  projectUsage: ProjectUsage[];
 }
 
 export async function loadRateLimits(): Promise<RateLimits | null> {
@@ -119,9 +131,64 @@ function utcToKstHour(isoTs: string): number {
   return (d.getUTCHours() + KST_OFFSET) % 24;
 }
 
+interface JsonlFileInfo {
+  path: string;
+  project: string; // short display name
+}
+
+/** Extract a short project name from the directory name.
+ *  The dir name encodes the original path with "/" replaced by "-".
+ *  We reconstruct by finding the known workspace prefix and taking the
+ *  next path segment.
+ *
+ *  e.g. "-Users-imdong-gug-Desktop-Dagym-DagymCRM" → "DagymCRM"
+ *       "-Users-imdong-gug-Desktop-Dagym-DagymCRM-issue-1402" → "DagymCRM"
+ *       "-Users-imdong-gug-Desktop-Dagym-claude-monitor-tui" → "claude-monitor-tui"
+ *       "-Users-imdong-gug" → "~"
+ */
+function shortProjectName(dirName: string): string {
+  // Reconstruct the original path: leading "-" → "/", internal "-" → "/"
+  // But this is lossy because folder names also contain "-".
+  // Better approach: use the home dir to strip the known prefix.
+  const home = (process.env.HOME || "").replace(/\//g, "-").replace(/^-/, "");
+  // dirName without leading dash
+  const stripped = dirName.replace(/^-/, "");
+
+  // Remove home prefix (e.g. "Users-imdong-gug")
+  if (!stripped.startsWith(home)) {
+    return dirName;
+  }
+  const remainder = stripped.slice(home.length).replace(/^-/, "");
+  // remainder is like "Desktop-Dagym-DagymCRM-issue-1402" or "" (for home dir)
+
+  if (!remainder) return "~";
+
+  // Split by known workspace path segments: "Desktop/Dagym" is the workspace root
+  // So remainder = "Desktop-Dagym-<project-folder>[-issue-NNN]"
+  const workspacePrefix = "Desktop-Dagym-";
+  if (!remainder.startsWith(workspacePrefix)) {
+    // Not under Dagym workspace
+    return remainder.split("-").pop() || remainder;
+  }
+
+  const afterWorkspace = remainder.slice(workspacePrefix.length);
+  if (!afterWorkspace) return "Dagym";
+
+  // afterWorkspace might be "DagymCRM-issue-1402" or "claude-monitor-tui"
+  // We need the actual directory name from the filesystem.
+  // Strategy: match against known project dirs on disk (resolved at init).
+  // Simpler: strip "-issue-NNN" suffix pattern, then return remainder.
+  const issueMatch = afterWorkspace.match(/^(.+?)(-issue-\d+)$/);
+  if (issueMatch) {
+    return issueMatch[1];
+  }
+
+  return afterWorkspace;
+}
+
 /** Collect all .jsonl files under PROJECTS_DIR recursively */
-async function collectJsonlFiles(): Promise<string[]> {
-  const files: string[] = [];
+async function collectJsonlFiles(): Promise<JsonlFileInfo[]> {
+  const files: JsonlFileInfo[] = [];
   try {
     const projectDirs = await readdir(PROJECTS_DIR);
     for (const dir of projectDirs) {
@@ -129,10 +196,11 @@ async function collectJsonlFiles(): Promise<string[]> {
       try {
         const st = await stat(projectPath);
         if (!st.isDirectory()) continue;
+        const project = shortProjectName(dir);
         const entries = await readdir(projectPath);
         for (const entry of entries) {
           if (entry.endsWith(".jsonl")) {
-            files.push(join(projectPath, entry));
+            files.push({ path: join(projectPath, entry), project });
           }
         }
       } catch {
@@ -286,6 +354,7 @@ export async function loadUsage(): Promise<UsageData> {
     dailyModelTokens: [],
     firstSessionDate: null,
     lastComputedDate: null,
+    projectUsage: [],
   };
 
   result.rateLimits = await loadRateLimits();
@@ -295,10 +364,15 @@ export async function loadUsage(): Promise<UsageData> {
 
   // Parse all files concurrently (batched to avoid fd exhaustion)
   const BATCH = 50;
-  const allStats: SessionStats[] = [];
+  const allStats: { stats: SessionStats; project: string }[] = [];
   for (let i = 0; i < files.length; i += BATCH) {
     const batch = files.slice(i, i + BATCH);
-    const results = await Promise.all(batch.map(parseSessionFile));
+    const results = await Promise.all(
+      batch.map(async (f) => ({
+        stats: await parseSessionFile(f.path),
+        project: f.project,
+      }))
+    );
     allStats.push(...results);
   }
 
@@ -306,12 +380,37 @@ export async function loadUsage(): Promise<UsageData> {
   const dailyMap: Record<string, DailyActivity> = {};
   const dailySessions: Record<string, Set<string>> = {};
   const modelMap: Record<string, ModelUsage> = {};
+  const projectMap: Record<string, ProjectUsage> = {};
   let firstDate: string | null = null;
   let lastDate: string | null = null;
 
-  for (const ss of allStats) {
+  for (const { stats: ss, project } of allStats) {
     result.totalMessages += ss.messageCount;
     result.totalToolCalls += ss.toolCallCount;
+
+    // Per-project aggregation
+    if (!projectMap[project]) {
+      projectMap[project] = {
+        project,
+        sessionCount: 0,
+        messageCount: 0,
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreateTokens: 0,
+      };
+    }
+    const pu = projectMap[project];
+    pu.sessionCount++;
+    pu.messageCount += ss.messageCount;
+    pu.toolCallCount += ss.toolCallCount;
+    for (const tokens of Object.values(ss.modelTokens)) {
+      pu.inputTokens += tokens.input;
+      pu.outputTokens += tokens.output;
+      pu.cacheReadTokens += tokens.cacheRead;
+      pu.cacheCreateTokens += tokens.cacheCreate;
+    }
 
     // Version (keep latest)
     if (ss.version && (!result.latestVersion || ss.version > result.latestVersion)) {
@@ -379,6 +478,13 @@ export async function loadUsage(): Promise<UsageData> {
       }
     }
   }
+
+  // Finalize project usage (sorted by total tokens desc)
+  result.projectUsage = Object.values(projectMap).sort((a, b) => {
+    const aTot = a.inputTokens + a.outputTokens;
+    const bTot = b.inputTokens + b.outputTokens;
+    return bTot - aTot;
+  });
 
   // Finalize daily session counts
   for (const [day, sessions] of Object.entries(dailySessions)) {
