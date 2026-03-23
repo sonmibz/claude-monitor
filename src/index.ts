@@ -15,6 +15,7 @@ import { loadUsage, type UsageData, type ProjectUsage } from "./data/usage.js";
 import { loadRecentHistory, type HistoryEntry } from "./data/history.js";
 import { HistoryBuffer } from "./data/history-buffer.js";
 import { loadSessionContexts, type SessionContext } from "./data/context.js";
+import { scanTasks, type TaskItem } from "./data/tasks.js";
 import {
   formatNumber,
   formatTokens,
@@ -27,6 +28,7 @@ import { ensureStatuslineSetup } from "./setup-statusline.js";
 
 // ── State ──────────────────────────────────────────────────────────────
 let agents: AgentInfo[] = [];
+let tasks: TaskItem[] = [];
 let sessions: SessionInfo[] = [];
 let processMap: Map<number, ProcessStats> = new Map();
 let history: HistoryEntry[] = [];
@@ -61,7 +63,7 @@ const sweepBar = new SweepBar(20);
 let isRefreshing = false;
 let lastUpdate = timestamp();
 let loadStep = 0;
-const LOAD_TOTAL = 5;
+const LOAD_TOTAL = 6;
 
 // ── Layout constants ───────────────────────────────────────────────────
 const LOGO_H = LOGO_HEIGHT + 2;
@@ -75,19 +77,21 @@ let MESSAGES_H = 18;
 let HOURLY_H = 10;
 let AGENTS_H = 28;
 let PROJECTS_H = 14;
+let TASKS_H = 10;
 let HISTORY_H = 12;
 
 function recalcLayout(): void {
   const screenH = screen.height as number;
   // Fixed overhead: Logo + RateLimit + Sessions + StatusBar
   const fixedH = LOGO_H + RATELIMIT_H + ROW2_H + STATUSBAR_H;
-  // Remaining space for: Middle(Agents/Stats/Hourly) + Projects + History
+  // Remaining space for: Middle(Agents/Stats/Hourly) + Projects + Tasks + History
   const remaining = Math.max(15, screenH - fixedH);
 
-  // Distribute proportionally: middle 55%, projects 25%, history 20%
-  MIDDLE_H = Math.max(10, Math.floor(remaining * 0.55));
-  PROJECTS_H = Math.max(5, Math.floor(remaining * 0.25));
-  HISTORY_H = Math.max(4, remaining - MIDDLE_H - PROJECTS_H);
+  // Distribute proportionally: middle 45%, projects 20%, tasks 15%, history 20%
+  MIDDLE_H = Math.max(10, Math.floor(remaining * 0.45));
+  PROJECTS_H = Math.max(5, Math.floor(remaining * 0.20));
+  TASKS_H = Math.max(5, Math.floor(remaining * 0.15));
+  HISTORY_H = Math.max(4, remaining - MIDDLE_H - PROJECTS_H - TASKS_H);
 
   // Split middle row: Messages takes 65%, Hourly gets the rest
   MESSAGES_H = Math.max(6, Math.floor(MIDDLE_H * 0.65));
@@ -206,8 +210,22 @@ const projectPanel = blessed.box({
   tags: false,
 });
 
-const historyPanel = blessed.box({
+const taskPanel = blessed.box({
   top: LOGO_H + RATELIMIT_H + ROW2_H + AGENTS_H + PROJECTS_H,
+  left: 0,
+  width: "100%",
+  height: TASKS_H,
+  label: " Tasks ",
+  border: { type: "line" },
+  style: { border: { fg: "green" }, label: { fg: "green" } },
+  scrollable: true,
+  keys: true,
+  vi: true,
+  tags: false,
+});
+
+const historyPanel = blessed.box({
+  top: LOGO_H + RATELIMIT_H + ROW2_H + AGENTS_H + PROJECTS_H + TASKS_H,
   left: 0,
   width: "100%",
   height: HISTORY_H,
@@ -238,6 +256,7 @@ screen.append(agentPanel);
 screen.append(statsPanel);
 screen.append(hourlyPanel);
 screen.append(projectPanel);
+screen.append(taskPanel);
 screen.append(historyPanel);
 screen.append(statusBar);
 
@@ -262,7 +281,11 @@ function repositionPanels(): void {
   projectPanel.top = projectTop;
   projectPanel.height = PROJECTS_H;
 
-  historyPanel.top = projectTop + PROJECTS_H;
+  const taskTop = projectTop + PROJECTS_H;
+  taskPanel.top = taskTop;
+  taskPanel.height = TASKS_H;
+
+  historyPanel.top = taskTop + TASKS_H;
   historyPanel.height = HISTORY_H;
 }
 
@@ -780,6 +803,68 @@ function renderProjects(): void {
   projectPanel.setContent(lines.join("\n"));
 }
 
+/** Resolve a conversation ID to the session ID shown in the Sessions panel.
+ *  1) Direct match: conversation ID equals a live session's sessionId
+ *  2) Fallback via contextMap PID: handles --resume where conversation ID differs
+ *  3) Falls back to the original conversation ID if no live session found */
+function resolveSessionId(conversationId: string): string {
+  for (const s of sessions) {
+    if (s.alive && s.sessionId === conversationId) return s.sessionId;
+  }
+  const ctx = contextMap.get(conversationId);
+  if (ctx?.pid) {
+    const liveSession = sessions.find(s => s.alive && s.pid === ctx.pid);
+    if (liveSession) return liveSession.sessionId;
+  }
+  return conversationId;
+}
+
+function renderTasks(): void {
+  const lines: string[] = [];
+
+  if (tasks.length === 0) {
+    lines.push("  (no tasks)");
+    taskPanel.setContent(lines.join("\n"));
+    return;
+  }
+
+  const STATUS_ICON: Record<string, string> = {
+    in_progress: "▶",
+    pending: "○",
+    completed: "✓",
+  };
+
+  const cStatus = 4;
+  const cId = 6;
+  const cSess = 12;
+  const fixedCols = 2 + cStatus + cId + cSess; // 2 = left indent
+  const cSubject = Math.max(20, (screen.width as number) - fixedCols - 2); // -2 for border
+
+  lines.push(
+    `  ${"".padEnd(cStatus)}${"ID".padEnd(cId)}${"Session".padEnd(cSess)}Subject`
+  );
+
+  for (const t of tasks) {
+    const icon = STATUS_ICON[t.status] || "?";
+    const id = t.id.padEnd(cId);
+    const sid = resolveSessionId(t.sessionId);
+    const sidStr = sid.slice(0, 8).padEnd(cSess);
+    const subject =
+      t.subject.length > cSubject - 2
+        ? t.subject.slice(0, cSubject - 4) + ".."
+        : t.subject;
+    lines.push(`  ${icon.padEnd(cStatus)}${id}${sidStr}${subject}`);
+  }
+
+  const inProgress = tasks.filter((t) => t.status === "in_progress").length;
+  const pending = tasks.filter((t) => t.status === "pending").length;
+  const completed = tasks.filter((t) => t.status === "completed").length;
+  taskPanel.setLabel(
+    ` Tasks (${tasks.length}) [▶${inProgress} ○${pending} ✓${completed}] `
+  );
+  taskPanel.setContent(lines.join("\n"));
+}
+
 function renderHistory(): void {
   const lines: string[] = [];
 
@@ -792,19 +877,20 @@ function renderHistory(): void {
   const innerW = (screen.width as number) - 2; // border(2)
   const indent = 2;
   const dateW = 12; // "3/23 14:05  "
-  const sidW = 10; // "d3e831cb  "
-  const promptW = Math.max(10, innerW - indent - dateW - sidW);
+  const sessW = 12;
+  const promptW = Math.max(10, innerW - indent - dateW - sessW);
 
-  lines.push(`  ${"Date".padEnd(dateW)}${"Session".padEnd(sidW)}Prompt`);
+  lines.push(`  ${"Date".padEnd(dateW)}${"Session".padEnd(sessW)}Prompt`);
 
   for (const h of history) {
     const ts = new Date(h.timestamp);
     const hh = String(ts.getHours()).padStart(2, "0");
     const mm = String(ts.getMinutes()).padStart(2, "0");
     const dateStr = `${ts.getMonth() + 1}/${ts.getDate()} ${hh}:${mm}`;
-    const sid = h.sessionId.slice(0, 8);
+    const sid = resolveSessionId(h.sessionId);
+    const sidStr = sid.slice(0, 8).padEnd(sessW);
     const display = truncateVisual(h.display, promptW);
-    lines.push(`  ${dateStr.padEnd(dateW)}${sid.padEnd(sidW)}${display}`);
+    lines.push(`  ${dateStr.padEnd(dateW)}${sidStr}${display}`);
   }
 
   historyPanel.setContent(lines.join("\n"));
@@ -832,6 +918,7 @@ function renderAll(): void {
 
   renderHourly();
   renderProjects();
+  renderTasks();
   renderHistory();
   renderStatusBar();
 }
@@ -868,6 +955,11 @@ async function refreshAll(): Promise<void> {
   loadStep = 5;
   renderStatusBar();
   screen.render();
+  tasks = await scanTasks();
+
+  loadStep = 6;
+  renderStatusBar();
+  screen.render();
   history = await loadRecentHistory(10);
 
   isRefreshing = false;
@@ -885,6 +977,7 @@ async function initialLoad(): Promise<void> {
   processMap = await getProcessStats(alivePids);
   contextMap = await loadSessionContexts();
   usage = await loadUsage();
+  tasks = await scanTasks();
   history = await loadRecentHistory(10);
   lastUpdate = timestamp();
   renderAll();
@@ -933,12 +1026,14 @@ setInterval(async () => {
   screen.render();
 }, 3000);
 
-// Usage stats: every 30 seconds (stats-cache.json changes rarely)
+// Usage stats + tasks: every 30 seconds
 setInterval(async () => {
   usage = await loadUsage();
+  tasks = await scanTasks();
   renderStats();
   renderHourly();
   renderProjects();
+  renderTasks();
   screen.render();
 }, 30000);
 
