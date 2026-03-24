@@ -2,6 +2,22 @@
 
 A real-time terminal dashboard for monitoring [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions, API rate limits, token usage, and activity trends.
 
+## Quick Start
+
+Download and run immediately — no install required:
+
+```bash
+curl -Lo claude-monitor.js https://github.com/sonmibz/claude-monitor/releases/download/v0.0.0/claude-monitor.js && bun claude-monitor.js
+```
+
+Or download manually: **[claude-monitor.js](https://github.com/sonmibz/claude-monitor/releases/download/v0.0.0/claude-monitor.js)**
+
+```bash
+bun claude-monitor.js
+```
+
+---
+
 ![Claude Monitor TUI Preview](preview.png)
 
 **[한국어](#한국어)**
@@ -220,6 +236,22 @@ MIT
 # 한국어
 
 Claude Code의 세션, API 사용량, 토큰 소비량, 활동 트렌드를 실시간으로 모니터링하는 터미널 대시보드입니다.
+
+## 빠른 시작
+
+설치 없이 바로 다운로드하여 실행할 수 있습니다:
+
+```bash
+curl -Lo claude-monitor.js https://github.com/sonmibz/claude-monitor/releases/download/v0.0.0/claude-monitor.js && bun claude-monitor.js
+```
+
+또는 직접 다운로드: **[claude-monitor.js](https://github.com/sonmibz/claude-monitor/releases/download/v0.0.0/claude-monitor.js)**
+
+```bash
+bun claude-monitor.js
+```
+
+---
 
 ![Claude Monitor TUI Preview](preview.png)
 
