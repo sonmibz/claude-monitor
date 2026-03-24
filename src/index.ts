@@ -506,9 +506,22 @@ function renderSessions(): void {
     cpuHistory.get(s.pid)!.push(cpu);
     memHistory.get(s.pid)!.push(mem);
 
-    // Context info: try sessionId first, then fall back to PID matching
-    // (on --resume, the conversation session_id differs from sessionId)
-    const ctx = contextMap.get(s.sessionId) || contextMap.get(`pid:${s.pid}`);
+    // Context info: try sessionId first, then fall back to PID matching.
+    // The sessions file's sessionId differs from the context's session_id
+    // (they are different ID spaces), so PID is the primary link.
+    // After /clear the sessions file mtime updates but old context files
+    // remain — only use PID fallback if the context was written AFTER the
+    // sessions file was last modified (i.e. after the most recent /clear).
+    let ctx = contextMap.get(s.sessionId);
+    if (!ctx) {
+      const pidCtx = contextMap.get(`pid:${s.pid}`);
+      if (pidCtx?.timestamp) {
+        const ctxTime = new Date(pidCtx.timestamp).getTime();
+        if (ctxTime >= s.fileMtime) {
+          ctx = pidCtx;
+        }
+      }
+    }
     const ctxPct = ctx?.usedPercentage ?? 0;
     const ctxStr = `${ctxPct}%`;
 

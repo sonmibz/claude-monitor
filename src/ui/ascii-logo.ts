@@ -1,12 +1,10 @@
-import { readFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+export const LOGO = [
+  "░█▀▀░█░░░█▀█░█░█░█▀▄░█▀▀░░░█▄█░█▀█░█▀█░▀█▀░▀█▀░█▀█░█▀▄",
+  "░█░░░█░░░█▀█░█░█░█░█░█▀▀░░░█░█░█░█░█░█░░█░░░█░░█░█░█▀▄",
+  "░▀▀▀░▀▀▀░▀░▀░▀▀▀░▀▀░░▀▀▀░░░▀░▀░▀▀▀░▀░▀░▀▀▀░░▀░░▀▀▀░▀░▀",
+].join("\n");
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const logoPath = join(__dirname, "logo.txt");
-
-export const LOGO = readFileSync(logoPath, "utf-8").trimEnd();
-export const LOGO_HEIGHT = LOGO.split("\n").length;
+export const LOGO_HEIGHT = 3;
 const lines = LOGO.split("\n");
 export const LOGO_WIDTH = Math.max(...lines.map((l) => l.length));
 

@@ -1,4 +1,4 @@
-import { readdir, readFile, unlink } from "fs/promises";
+import { readdir, readFile, stat, unlink } from "fs/promises";
 import { join } from "path";
 
 export interface SessionInfo {
@@ -7,6 +7,8 @@ export interface SessionInfo {
   cwd: string;
   startedAt: number;
   alive: boolean;
+  /** mtime of the sessions file (epoch ms). Updates on /clear. */
+  fileMtime: number;
 }
 
 const SESSIONS_DIR = join(process.env.HOME || "", ".claude", "sessions");
@@ -28,7 +30,11 @@ export async function scanSessions(): Promise<SessionInfo[]> {
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
       try {
-        const raw = await readFile(join(SESSIONS_DIR, file), "utf-8");
+        const filePath = join(SESSIONS_DIR, file);
+        const [raw, st] = await Promise.all([
+          readFile(filePath, "utf-8"),
+          stat(filePath),
+        ]);
         const data = JSON.parse(raw);
         const alive = isProcessAlive(data.pid);
         sessions.push({
@@ -37,6 +43,7 @@ export async function scanSessions(): Promise<SessionInfo[]> {
           cwd: data.cwd || "",
           startedAt: data.startedAt || 0,
           alive,
+          fileMtime: st.mtimeMs,
         });
       } catch {
         // skip malformed files

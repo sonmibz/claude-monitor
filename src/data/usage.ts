@@ -1,19 +1,12 @@
 import { readFile, readdir, stat } from "fs/promises";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import { createReadStream } from "fs";
 import { createInterface } from "readline";
 import { todayStr } from "../utils/format.js";
+import { DATA_DIR } from "../utils/paths.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECTS_DIR = join(process.env.HOME || "", ".claude", "projects");
-const RATE_LIMITS_FILE = join(
-  __dirname,
-  "..",
-  "..",
-  ".data",
-  "rate-limits-latest.json"
-);
+const RATE_LIMITS_FILE = join(DATA_DIR, "rate-limits-latest.json");
 
 // UTC offset for KST (hours)
 const KST_OFFSET = 9;

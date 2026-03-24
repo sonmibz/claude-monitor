@@ -1,9 +1,8 @@
 import { readFile, readdir } from "fs/promises";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
+import { DATA_DIR } from "../utils/paths.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONTEXTS_DIR = join(__dirname, "..", "..", ".data", "contexts");
+const CONTEXTS_DIR = join(DATA_DIR, "contexts");
 
 export interface SessionContext {
   sessionId: string;
@@ -50,9 +49,19 @@ export async function loadSessionContexts(): Promise<
         };
         // Key by session_id (conversation ID)
         result.set(data.session_id, entry);
-        // Also key by PID for --resume fallback matching
+        // Also key by PID for --resume fallback matching.
+        // If multiple context files share the same PID (e.g. after /clear),
+        // keep only the most recent one so stale data doesn't linger.
         if (data.pid) {
-          result.set(`pid:${data.pid}`, entry);
+          const pidKey = `pid:${data.pid}`;
+          const existing = result.get(pidKey);
+          if (
+            !existing ||
+            !existing.timestamp ||
+            (entry.timestamp && entry.timestamp > existing.timestamp)
+          ) {
+            result.set(pidKey, entry);
+          }
         }
       } catch {
         // skip malformed

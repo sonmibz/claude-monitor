@@ -4,8 +4,10 @@
   "description": "Terminal monitoring dashboard for Claude Code",
   "type": "module",
   "scripts": {
+    "postinstall": "cp patches/blessed-widget.js node_modules/blessed/lib/widget.js",
     "start": "bun run src/index.ts",
-    "dev": "bun --watch run src/index.ts"
+    "dev": "bun --watch run src/index.ts",
+    "build": "bun build --compile src/index.ts --outfile build/claude-monitor"
   },
   "dependencies": {
     "blessed": "^0.1.81",
