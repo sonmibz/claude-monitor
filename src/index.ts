@@ -835,8 +835,23 @@ function resolveSessionId(conversationId: string): string {
 function renderTasks(): void {
   const lines: string[] = [];
 
-  if (tasks.length === 0) {
+  // Only show tasks from alive sessions
+  const aliveSessionIds = new Set(
+    sessions.filter((s) => s.alive).map((s) => s.sessionId)
+  );
+  const aliveTasks = tasks.filter((t) => {
+    if (aliveSessionIds.has(t.sessionId)) return true;
+    // --resume case: check if contextMap links this session to a live PID
+    const ctx = contextMap.get(t.sessionId);
+    if (ctx?.pid) {
+      return sessions.some((s) => s.alive && s.pid === ctx.pid);
+    }
+    return false;
+  });
+
+  if (aliveTasks.length === 0) {
     lines.push("  (no tasks)");
+    taskPanel.setLabel(" Tasks (0) ");
     taskPanel.setContent(lines.join("\n"));
     return;
   }
@@ -857,7 +872,7 @@ function renderTasks(): void {
     `  ${"".padEnd(cStatus)}${"ID".padEnd(cId)}${"Session".padEnd(cSess)}Subject`
   );
 
-  for (const t of tasks) {
+  for (const t of aliveTasks) {
     const icon = STATUS_ICON[t.status] || "?";
     const id = t.id.padEnd(cId);
     const sid = resolveSessionId(t.sessionId);
@@ -869,11 +884,11 @@ function renderTasks(): void {
     lines.push(`  ${icon.padEnd(cStatus)}${id}${sidStr}${subject}`);
   }
 
-  const inProgress = tasks.filter((t) => t.status === "in_progress").length;
-  const pending = tasks.filter((t) => t.status === "pending").length;
-  const completed = tasks.filter((t) => t.status === "completed").length;
+  const inProgress = aliveTasks.filter((t) => t.status === "in_progress").length;
+  const pending = aliveTasks.filter((t) => t.status === "pending").length;
+  const completed = aliveTasks.filter((t) => t.status === "completed").length;
   taskPanel.setLabel(
-    ` Tasks (${tasks.length}) [▶${inProgress} ○${pending} ✓${completed}] `
+    ` Tasks (${aliveTasks.length}) [▶${inProgress} ○${pending} ✓${completed}] `
   );
   taskPanel.setContent(lines.join("\n"));
 }
